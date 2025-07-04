@@ -90,6 +90,7 @@
     border-radius: 5px;
     background-color: #aaaaaa;
     border: 3px solid #282c34;
+    position: relative;
 }
 .plugged-device .pack-grid .pack-tile {
     flex-direction: column;
@@ -293,4 +294,27 @@
 .highlighted-dropzone {
     outline: 3px dashed #282c34;
     outline-offset: -4px;
+}
+
+.pack-checkbox-container {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 10;
+}
+.pack-checkbox {
+    width: 20px;
+    height: 20px;
+}
+
+.header-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    margin-top: 8px;
+}
+.special-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
 }

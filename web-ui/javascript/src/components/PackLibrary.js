@@ -11,6 +11,7 @@ import {toast} from "react-toastify";
 import uuidv4 from 'uuid/v4';
 import { generateFilename } from '../utils/packs';
 import { readFromArchive } from '../utils/reader';
+import { writeToArchive } from '../utils/writer';
 
 import {
     actionAddFromLibrary,
@@ -390,12 +391,7 @@ class PackLibrary extends React.Component {
                 }
                 // 5. Save to library (upload)
                 const newFilename = generateFilename(loadedModel);
-                if (!window.exportPackToZip) {
-                    toast.error('exportPackToZip utility not found. Skipping this pack.');
-                    errors.push(new Error('exportPackToZip utility not found'));
-                    continue;
-                }
-                const newZipBlob = await window.exportPackToZip(loadedModel);
+                const newZipBlob = await writeToArchive(loadedModel);
                 await this.props.uploadPackToLibrary(loadedModel.getEntryPoint().uuid, newFilename, newZipBlob);
                 // 6. Convert to FS format
                 await this.props.convertPackInLibrary(loadedModel.getEntryPoint().uuid, newFilename, 'fs', this.props.settings.allowEnriched, this.context);
@@ -573,13 +569,15 @@ class PackLibrary extends React.Component {
                         <div><strong>{t('library.local.packs.length')}</strong> { this.state.library.packs.length || '-' }</div>
                         <input type="file" id="upload" style={{visibility: 'hidden', position: 'absolute'}} onChange={this.packAddFileSelected} />
                         <span title={t('library.local.addPack')} className="btn btn-default glyphicon glyphicon-import" onClick={this.showAddFileSelector}/>
-                        <div className="editor-actions">
-                            <p><button className="library-action" onClick={this.onCreateNewPackInEditor}>{t('library.local.empty.link1')}</button> <button className="library-action" onClick={this.onOpenSamplePackInEditor}>{t('library.local.empty.link2')}</button> {t('library.local.empty.suffix')}</p>
-                        </div>
-                        <div className="special-actions">
-                            <button className="library-action" onClick={this.handleSelectAll}>{'Select All'}</button>
-                            <button className="library-action" onClick={this.handleUnselectAll}>{'Unselect All'}</button>
-                            <button className="library-action" onClick={this.handleBatchConvert} disabled={this.state.converting}>{this.state.converting ? 'Converting...' : 'Convert'}</button>
+                        <div className="header-actions-row">
+                            <div className="editor-actions">
+                                <p><button className="library-action" onClick={this.onCreateNewPackInEditor}>{t('library.local.empty.link1')}</button> <button className="library-action" onClick={this.onOpenSamplePackInEditor}>{t('library.local.empty.link2')}</button> {t('library.local.empty.suffix')}</p>
+                            </div>
+                            <div className="special-actions">
+                                <button className="library-action" onClick={this.handleSelectAll}>{'Select All'}</button>
+                                <button className="library-action" onClick={this.handleUnselectAll}>{'Unselect All'}</button>
+                                <button className="library-action" onClick={this.handleBatchConvert} disabled={this.state.converting}>{this.state.converting ? 'Converting...' : 'Convert'}</button>
+                            </div>
                         </div>
                     </div>
                     <div className={`library-dropzone ${this.state.dragging === 'device-pack' ? 'highlighted-dropzone' : ''}`}
@@ -603,7 +601,9 @@ class PackLibrary extends React.Component {
                                      onDragEnd={event => {
                                          this.setState({dragging: null});
                                      }}>
-                                    <input type="checkbox" style={{position: 'absolute', left: 4, top: 4, zIndex: 2}} checked={this.state.selectedLibraryPacks.has(group.uuid)} onChange={this.handleLibraryPackCheckbox(group.uuid)} />
+                                    <div className="pack-checkbox-container">
+                                        <input type="checkbox" className="pack-checkbox" checked={this.state.selectedLibraryPacks.has(group.uuid)} onChange={this.handleLibraryPackCheckbox(group.uuid)} />
+                                    </div>
                                     <div className="pack-left">
                                         <div className="pack-title">
                                             <span>{group.packs[0].title && group.packs[0].title !== "MISSING_PACK_TITLE" ? group.packs[0].title : group.uuid}</span>&nbsp;
