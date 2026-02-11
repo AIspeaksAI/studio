@@ -280,6 +280,29 @@
     color: #23527c;
 }
 
+button.library-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.batch-actions {
+    margin-top: 6px;
+}
+
+.pack-select {
+    margin-right: 6px;
+}
+
+.pack-select input {
+    cursor: pointer;
+}
+
+.batch-ready {
+    font-size: 11px;
+    color: #1c7d35;
+    margin-left: 6px;
+}
+
 .device-dropzone {
     height: calc(100vh - 160px - 48px);
     overflow-y: scroll;

@@ -28,11 +28,15 @@ import Modal from "./Modal";
 import {
     LOCAL_STORAGE_ALLOW_ENRICHED_BINARY_FORMAT
 } from "../utils/storage";
+import {generateFilename} from "../utils/packs";
+import {readFromArchive} from "../utils/reader";
+import {writeToArchive} from "../utils/writer";
+import {automateManualConversionForGroup, runSequentialBatch} from "../utils/automatedConversion";
 
 import './PackLibrary.css';
 
 
-class PackLibrary extends React.Component {
+export class PackLibrary extends React.Component {
 
     constructor(props) {
         super(props);
@@ -59,6 +63,12 @@ class PackLibrary extends React.Component {
             confirmConversionDialog: {
                 show: false,
                 data: null
+            },
+            selectedPackUuids: {},
+            batchResults: {},
+            batchRunning: {
+                conversion: false,
+                transfer: false
             }
         };
     }
@@ -72,9 +82,24 @@ class PackLibrary extends React.Component {
 
     componentWillReceiveProps(nextProps, nextContext) {
         console.log(nextProps);
+        let availableUuids = new Set((nextProps.library.packs || []).map(group => group.uuid));
+        let selectedPackUuids = Object.keys(this.state.selectedPackUuids || {})
+            .filter(uuid => availableUuids.has(uuid))
+            .reduce((acc, uuid) => {
+                acc[uuid] = this.state.selectedPackUuids[uuid];
+                return acc;
+            }, {});
+        let batchResults = Object.keys(this.state.batchResults || {})
+            .filter(uuid => availableUuids.has(uuid))
+            .reduce((acc, uuid) => {
+                acc[uuid] = this.state.batchResults[uuid];
+                return acc;
+            }, {});
         this.setState({
             device: nextProps.device,
-            library: nextProps.library
+            library: nextProps.library,
+            selectedPackUuids,
+            batchResults
         });
     }
 
@@ -327,8 +352,138 @@ class PackLibrary extends React.Component {
         this.props.loadSampleInEditor();
     };
 
+    togglePackSelection = (groupUuid) => {
+        return (e) => {
+            e.stopPropagation();
+            this.setState({
+                selectedPackUuids: {
+                    ...this.state.selectedPackUuids,
+                    [groupUuid]: !this.state.selectedPackUuids[groupUuid]
+                }
+            });
+        };
+    };
+
+    getSelectedPackGroups = () => {
+        return (this.state.library.packs || [])
+            .filter(group => Boolean(this.state.selectedPackUuids[group.uuid]));
+    };
+
+    isBatchBusy = () => {
+        return this.state.batchRunning.conversion || this.state.batchRunning.transfer;
+    };
+
+    runAutomatedConversionForGroup = async (group, driver) => {
+        return automateManualConversionForGroup(group, driver, {
+            convertPackInLibrary: (uuid, path, format) => this.props.convertPackInLibrary(uuid, path, format, this.props.settings.allowEnriched, this.context),
+            downloadPackFromLibrary: (uuid, path) => this.props.downloadPackFromLibrary(uuid, path),
+            readFromArchive,
+            writeToArchive,
+            uploadPackToLibrary: (path, packData) => this.props.uploadPackToLibrary(path, packData),
+            generateFilename
+        });
+    };
+
+    onBatchConversion = async () => {
+        if (this.isBatchBusy()) {
+            return;
+        }
+        let selectedGroups = this.getSelectedPackGroups();
+        if (selectedGroups.length === 0) {
+            toast.info('No audiobook selected for batch conversion.');
+            return;
+        }
+        let driver = (this.state.device.metadata && this.state.device.metadata.driver) || 'fs';
+        this.setState({
+            batchRunning: {
+                ...this.state.batchRunning,
+                conversion: true
+            }
+        });
+        let results = await runSequentialBatch(
+            selectedGroups,
+            group => this.runAutomatedConversionForGroup(group, driver)
+        );
+        let converted = results.filter(r => r.ok);
+        let failed = results.filter(r => !r.ok);
+        let nextBatchResults = { ...this.state.batchResults };
+        converted.forEach(r => {
+            nextBatchResults[r.item.uuid] = r.data;
+        });
+        this.setState({
+            batchResults: nextBatchResults,
+            batchRunning: {
+                ...this.state.batchRunning,
+                conversion: false
+            }
+        });
+        if (failed.length > 0) {
+            console.error('Batch conversion failures', failed.map(f => f.error));
+            toast.error(`Batch conversion completed with ${failed.length} failure(s).`);
+        } else {
+            toast.success(`Batch conversion completed (${converted.length}/${selectedGroups.length}).`);
+        }
+    };
+
+    onBatchTransfer = async () => {
+        if (this.isBatchBusy()) {
+            return;
+        }
+        if (!this.state.device.metadata) {
+            toast.error('No Lunii device connected.');
+            return;
+        }
+        let selectedGroups = this.getSelectedPackGroups();
+        if (selectedGroups.length === 0) {
+            toast.info('No audiobook selected for batch transfer.');
+            return;
+        }
+        let driver = this.state.device.metadata.driver;
+        this.setState({
+            batchRunning: {
+                ...this.state.batchRunning,
+                transfer: true
+            }
+        });
+        let results = await runSequentialBatch(selectedGroups, async group => {
+            let conversionResult = this.state.batchResults[group.uuid];
+            if (!conversionResult || !conversionResult.convertedPath) {
+                throw new Error(`Pack ${group.uuid} was not converted yet`);
+            }
+            let success = await this.props.addFromLibrary(
+                conversionResult.uuid,
+                conversionResult.convertedPath,
+                driver,
+                driver,
+                this.context
+            );
+            if (!success) {
+                throw new Error(`Transfer failed for ${group.uuid}`);
+            }
+            return conversionResult;
+        });
+        let transferred = results.filter(r => r.ok);
+        let failed = results.filter(r => !r.ok);
+        this.setState({
+            batchRunning: {
+                ...this.state.batchRunning,
+                transfer: false
+            }
+        });
+        if (failed.length > 0) {
+            console.error('Batch transfer failures', failed.map(f => f.error));
+            toast.error(`Batch transfer completed with ${failed.length} failure(s).`);
+        } else {
+            toast.success(`Batch transfer completed (${transferred.length}/${selectedGroups.length}).`);
+        }
+    };
+
     render() {
         const { t } = this.props;
+        let selectedCount = this.getSelectedPackGroups().length;
+        let batchBusy = this.isBatchBusy();
+        let batchConversionDisabled = batchBusy || selectedCount === 0;
+        let batchTransferDisabled = batchBusy || selectedCount === 0 || !this.state.device.metadata;
         let storagePercentage = null;
         let storageStatus = null;
         if (this.state.device.metadata) {
@@ -490,6 +645,10 @@ class PackLibrary extends React.Component {
                         <span title={t('library.local.addPack')} className="btn btn-default glyphicon glyphicon-import" onClick={this.showAddFileSelector}/>
                         <div className="editor-actions">
                             <p><button className="library-action" onClick={this.onCreateNewPackInEditor}>{t('library.local.empty.link1')}</button> <button className="library-action" onClick={this.onOpenSamplePackInEditor}>{t('library.local.empty.link2')}</button> {t('library.local.empty.suffix')}</p>
+                            <p className="batch-actions">
+                                <button className="library-action" onClick={this.onBatchConversion} disabled={batchConversionDisabled}>Batch CONVERSION</button>
+                                <button className="library-action" onClick={this.onBatchTransfer} disabled={batchTransferDisabled}>Batch TRANSFER</button>
+                            </p>
                         </div>
                     </div>
                     <div className={`library-dropzone ${this.state.dragging === 'device-pack' ? 'highlighted-dropzone' : ''}`}
@@ -515,7 +674,14 @@ class PackLibrary extends React.Component {
                                      }}>
                                     <div className="pack-left">
                                         <div className="pack-title">
+                                            <label className="pack-select" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
+                                                <input type="checkbox"
+                                                       checked={Boolean(this.state.selectedPackUuids[group.uuid])}
+                                                       disabled={!this.isPackDraggable(group.packs[0])}
+                                                       onChange={this.togglePackSelection(group.uuid)} />
+                                            </label>
                                             <span>{group.packs[0].title && group.packs[0].title !== "MISSING_PACK_TITLE" ? group.packs[0].title : group.uuid}</span>&nbsp;
+                                            {this.state.batchResults[group.uuid] && <span className="batch-ready" title="Ready for batch transfer">[ready]</span>}
                                         </div>
                                         <div className="pack-thumb" title={group.packs[0].nightModeAvailable && t('library.nightMode')}>
                                             <img src={group.packs[0].image || defaultImage} alt="" width="128" height="128" draggable={false} />

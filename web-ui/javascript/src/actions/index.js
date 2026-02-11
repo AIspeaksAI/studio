@@ -142,45 +142,73 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t) => 
     return dispatch => mutex.acquire()
         .then(
             release => {
+                let released = false;
+                let safeRelease = () => {
+                    if (!released) {
+                        released = true;
+                        release();
+                    }
+                };
                 // First, make sure the story pack is in the right format.
                 if (driver !== format) {
                     console.error('pack format is not compatible with the device');
                     toast.error(t('toasts.device.notCompatible'));
                     // Always release the mutex
-                    release();
+                    safeRelease();
+                    return false;
                 } else {
+                    if (!context || !context.eventBus || typeof context.eventBus.registerHandler !== 'function') {
+                        console.error('event bus is not available');
+                        toast.error(t('toasts.device.addingFailed'));
+                        safeRelease();
+                        return false;
+                    }
                     // Then start transfer
                     let toastId = toast(t('toasts.device.adding'), { autoClose: false });
                     return addFromLibrary(uuid, path)
                         .then(resp => {
-                            // Monitor transfer progress
+                            // Monitor transfer progress until done
                             let transferId = resp.transferId;
-                            context.eventBus.registerHandler('storyteller.transfer.'+transferId+'.progress', (error, message) => {
-                                console.log("Received `storyteller.transfer."+transferId+".progress` event from vert.x event bus.");
-                                console.log(message.body);
-                                if (message.body.progress < 1) {
-                                    toast.update(toastId, {progress: message.body.progress, autoClose: false});
-                                }
-                            });
-                            context.eventBus.registerHandler('storyteller.transfer.'+transferId+'.done', (error, message) => {
-                                console.log("Received `storyteller.transfer."+transferId+".done` event from vert.x event bus.");
-                                console.log(message.body);
-                                if (message.body.success) {
-                                    toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t('toasts.device.added'), autoClose: 5000});
-                                    // Refresh device metadata and packs list
-                                    dispatch(actionRefreshDevice(t));
-                                } else {
-                                    toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.addingFailed')}</>} />, autoClose: false });
-                                }
-                                // Always release the mutex
-                                release();
+                            let progressAddress = 'storyteller.transfer.'+transferId+'.progress';
+                            let doneAddress = 'storyteller.transfer.'+transferId+'.done';
+
+                            return new Promise(resolve => {
+                                let progressHandler = (error, message) => {
+                                    console.log("Received `storyteller.transfer."+transferId+".progress` event from vert.x event bus.");
+                                    console.log(message.body);
+                                    if (message.body.progress < 1) {
+                                        toast.update(toastId, {progress: message.body.progress, autoClose: false});
+                                    }
+                                };
+                                let doneHandler = (error, message) => {
+                                    console.log("Received `storyteller.transfer."+transferId+".done` event from vert.x event bus.");
+                                    console.log(message.body);
+                                    if (message.body.success) {
+                                        toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t('toasts.device.added'), autoClose: 5000});
+                                        // Refresh device metadata and packs list
+                                        dispatch(actionRefreshDevice(t));
+                                    } else {
+                                        toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.addingFailed')}</>} />, autoClose: false });
+                                    }
+                                    if (typeof context.eventBus.unregisterHandler === 'function') {
+                                        context.eventBus.unregisterHandler(progressAddress, progressHandler);
+                                        context.eventBus.unregisterHandler(doneAddress, doneHandler);
+                                    }
+                                    // Always release the mutex
+                                    safeRelease();
+                                    resolve(Boolean(message.body && message.body.success));
+                                };
+
+                                context.eventBus.registerHandler(progressAddress, progressHandler);
+                                context.eventBus.registerHandler(doneAddress, doneHandler);
                             });
                         })
                         .catch(e => {
                             console.error('failed to add pack to device', e);
                             toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.addingFailed')}</>} error={e} />, autoClose: false });
                             // Always release the mutex
-                            release();
+                            safeRelease();
+                            return false;
                         });
                 }
             },
